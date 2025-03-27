@@ -194,7 +194,6 @@ def preprocess_raw_data(file_path, annotations, epoch_length=1):
     return epochs, labels
 
 # This function reads time in HH:MINS:SEC format and converts it into Seconds
-# HOW DOES IT KNOW HOW TO SORT TIME ACROSS MULTIPLE DAYS OF DATA
 def get_hr(time):
     hr, minute, sec = time.split(":")
     hr_int = float(hr) * 3600
