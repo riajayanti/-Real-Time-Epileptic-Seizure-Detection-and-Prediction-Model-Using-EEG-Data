@@ -1,0 +1,10 @@
+# Minimal requirements for testing and basic functionality
+numpy>=1.19.0
+pandas>=1.2.0
+scikit-learn>=0.24.0
+imbalanced-learn>=0.7.0
+
+# For testing without EEG dependencies
+matplotlib>=3.3.0
+scipy>=1.6.0
+

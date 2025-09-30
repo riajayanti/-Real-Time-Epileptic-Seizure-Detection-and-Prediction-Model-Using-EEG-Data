@@ -1,0 +1,335 @@
+# 1) SETUP AND IMPORTS 
+
+!pip install mne # Install the 'mne' libraryimport numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import (
+    Input, LSTM, Dense, Dropout, concatenate,
+    BatchNormalization, Bidirectional
+)
+from tensorflow.keras.callbacks import (
+    EarlyStopping, ModelCheckpoint,
+    ReduceLROnPlateau, TensorBoard
+)
+from tensorflow.keras.metrics import AUC
+from sklearn.metrics import (
+    classification_report, confusion_matrix,
+    roc_curve, precision_recall_curve
+)
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import mne 
+
+# 2) MODEL ARCHITECTURE  
+
+class SeizurePredictor:
+    def __init__(self,
+                 sequence_shape,
+                 feature_shape,
+                 lstm_units=[64, 32], # Can try changing num_units
+                 dense_units=[32], # Can try changing num_units
+                 dropout_rate=0.3):
+        """Initialize seizure prediction model
+
+        Args:
+            sequence_shape: Shape of EEG sequences (seq_len, n_channels, n_times)
+            feature_shape: Shape of engineered features
+            lstm_units: List of units in LSTM layers
+            dense_units: List of units in Dense layers
+            dropout_rate: Dropout rate for regularization
+        """
+        self.sequence_shape = sequence_shape
+        self.feature_shape = feature_shape
+        self.lstm_units = lstm_units
+        self.dense_units = dense_units
+        self.dropout_rate = dropout_rate
+        self.model = self._build_model()
+
+    def _build_model(self):
+        """Build the hybrid LSTM model"""
+        # Sequence input branch
+        seq_input = Input(shape=self.sequence_shape, name='sequence_input')
+        x = seq_input
+
+        # LSTM layers
+        for i, units in enumerate(self.lstm_units):
+            return_sequences = i < len(self.lstm_units) - 1
+            x = Bidirectional(LSTM(units, return_sequences=return_sequences))(x) # Can add more BiDirectional Layers
+            x = BatchNormalization()(x)
+            x = Dropout(self.dropout_rate)(x)
+
+        # Feature input branch
+        feature_input = Input(shape=self.feature_shape, name='feature_input')
+
+        # Combine branches
+        combined = concatenate([x, feature_input])
+
+        # Dense layers
+        for units in self.dense_units:
+            combined = Dense(units, activation='relu')(combined) # Can add more dense layers here
+            combined = BatchNormalization()(combined) # 1 for each dense layer
+            combined = Dropout(self.dropout_rate)(combined)
+
+
+        # Output layer
+        output = Dense(1, activation='sigmoid')(combined)
+
+        # Create model
+        model = Model(inputs=[seq_input, feature_input], outputs=output)
+
+        return model
+
+    def compile_model(self, learning_rate=0.001, class_weights=None):
+        """Compile the model with custom loss and metrics
+
+        Args:
+            learning_rate: Initial learning rate
+            class_weights: Weights for different classes
+        """
+        # Custom focal loss to handle class imbalance
+        def focal_loss(gamma=2., alpha=.25):
+            def focal_loss_fixed(y_true, y_pred):
+                pt_1 = tf.where(tf.equal(y_true, 1), y_pred, tf.ones_like(y_pred))
+                pt_0 = tf.where(tf.equal(y_true, 0), y_pred, tf.zeros_like(y_pred))
+                return -tf.reduce_mean(
+                    alpha * tf.pow(1. - pt_1, gamma) * tf.math.log(pt_1 + 1e-7) +
+                    (1-alpha) * tf.pow(pt_0, gamma) * tf.math.log(1. - pt_0 + 1e-7)
+                )
+            return focal_loss_fixed
+
+        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+
+        self.model.compile(
+            optimizer=optimizer,
+            loss=focal_loss(),
+            metrics=['accuracy',
+                    tf.keras.metrics.Precision(),
+                    tf.keras.metrics.Recall(),
+                    AUC()]
+        )
+
+    def create_callbacks(self, patience=10):
+        """Create training callbacks
+
+        Args:
+            patience: Number of epochs to wait for improvement
+        """
+        # Create log directory for tensorboard
+        log_dir = "logs/fit/" + datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        callbacks = [
+            EarlyStopping(
+                monitor='val_loss',
+                patience=patience,
+                restore_best_weights=True
+            ),
+            ModelCheckpoint(
+                'best_model.h5',
+                monitor='val_loss',
+                save_best_only=True
+            ),
+            ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=patience//2,
+                min_lr=1e-6
+            ),
+            TensorBoard(log_dir=log_dir)
+        ]
+
+        return callbacks
+
+# 3) TRAINING PIPELINE 
+class TrainingPipeline:
+    def __init__(self, predictor):
+        """Initialize training pipeline
+
+        Args:
+            predictor: Instance of SeizurePredictor
+        """
+        self.predictor = predictor
+
+    def train(self,
+              X_train_seq, X_train_features, y_train,
+              X_val_seq, X_val_features, y_val,
+              batch_size=32,
+              epochs=100,
+              class_weights=None):
+        """Train the model
+
+        Args:
+            X_train_seq: Training sequences
+            X_train_features: Training features
+            y_train: Training labels
+            X_val_seq: Validation sequences
+            X_val_features: Validation features
+            y_val: Validation labels
+        """
+        # Compile model
+        self.predictor.compile_model(class_weights=class_weights)
+
+        # Get callbacks
+        callbacks = self.predictor.create_callbacks()
+
+        # Train model
+        history = self.predictor.model.fit(
+            [X_train_seq, X_train_features],
+            y_train,
+            validation_data=([X_val_seq, X_val_features], y_val),
+            batch_size=batch_size,
+            epochs=epochs,
+            class_weight=class_weights,
+            callbacks=callbacks,
+            verbose=1
+        )
+
+        return history
+
+    def evaluate(self, X_test_seq, X_test_features, y_test):
+        """Evaluate the model
+
+        Args:
+            X_test_seq: Test sequences
+            X_test_features: Test features
+            y_test: Test labels
+        """
+        # Get predictions
+        y_pred_prob = self.predictor.model.predict([X_test_seq, X_test_features])
+        y_pred = (y_pred_prob > 0.5).astype(int)
+
+        # Print classification report
+        print("\nClassification Report:")
+        print(classification_report(y_test, y_pred))
+
+        # Plot confusion matrix
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(
+            confusion_matrix(y_test, y_pred),
+            annot=True,
+            fmt='d',
+            cmap='Blues'
+        )
+        plt.title('Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.show()
+
+        return y_pred_prob
+
+4) USAGE EXAMPLE 
+
+import numpy as np
+import mne
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.optimizers import Adam
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
+from imblearn.over_sampling import SMOTE
+from collections import Counter
+from tensorflow.keras.callbacks import EarlyStopping
+
+# Function to preprocess raw EEG data into epochs
+def preprocess_raw_data(file_path, selected_channels, epoch_length=1):
+    raw = mne.io.read_raw_edf(file_path, preload=True)
+    raw.pick_channels(selected_channels)
+    sampling_rate = int(raw.info['sfreq'])
+    samples_per_epoch = epoch_length * sampling_rate
+
+    data, _ = raw[:]
+    num_samples = data.shape[1]
+    epochs = [data[:, i:i+samples_per_epoch] for i in range(0, num_samples, samples_per_epoch) if i+samples_per_epoch <= num_samples]
+
+    return np.array(epochs)
+
+# Function to create labels from seizure annotations
+def create_labels_from_annotations(epochs, annotations, sampling_rate=256, epoch_length=1):
+    num_epochs = len(epochs)
+    samples_per_epoch = sampling_rate * epoch_length
+    labels = np.zeros(num_epochs)
+
+    for i in range(num_epochs):
+        epoch_start_time = (i * samples_per_epoch) / sampling_rate
+        epoch_end_time = epoch_start_time + epoch_length
+
+        for annotation in annotations:
+            if (epoch_start_time < annotation["end_time"]) and (epoch_end_time > annotation["start_time"]):
+                labels[i] = 1
+
+    return labels
+
+# Function to balance data using SMOTE
+def balance_seizure_data(epochs_array, labels):
+    n_epochs, n_channels, n_timepoints = epochs_array.shape
+    X_reshaped = epochs_array.reshape(n_epochs, n_channels * n_timepoints)
+
+    smote = SMOTE(sampling_strategy=0.7)  # Increased the SMOTE ratio
+    X_balanced, y_balanced = smote.fit_resample(X_reshaped, labels)
+
+    X_balanced_3d = X_balanced.reshape(-1, n_channels, n_timepoints)
+    print("Original class distribution:", Counter(labels))
+    print("Balanced class distribution:", Counter(y_balanced))
+    return X_balanced_3d, y_balanced
+
+# Function to validate balanced data
+def validate_balanced_data(X_balanced, y_balanced):
+    if np.any(np.isnan(X_balanced)) or np.any(np.isinf(X_balanced)):
+        raise ValueError("Dataset contains NaN or infinite values")
+    class_counts = Counter(y_balanced)
+    ratio = min(class_counts.values()) / max(class_counts.values())
+    if ratio < 0.4:
+        print("Warning: Classes still significantly imbalanced")
+
+# Main Script
+if __name__ == "__main__":
+    file_path = '/content/drive/Shareddrives/riajayanti/physionet.org/files/chbmit/1.0.0/chb02/chb02_01.edf'
+    seizure_annotations = [
+        {"start_time": 500, "end_time": 560},
+        {"start_time": 1000, "end_time": 1040},
+    ]
+
+    selected_channels = ['FP1-F7', 'FP2-F8', 'F7-T7', 'F8-T8', 'FZ-CZ', 'CZ-PZ']
+    epochs = preprocess_raw_data(file_path, selected_channels, epoch_length=1)
+    ictal_labels = create_labels_from_annotations(epochs, seizure_annotations)
+
+    # Normalize epochs
+    epochs_normalized = epochs / np.max(np.abs(epochs), axis=(1, 2), keepdims=True)
+
+    # Balance the data using SMOTE
+    X_balanced, y_balanced = balance_seizure_data(epochs_normalized, ictal_labels)
+    validate_balanced_data(X_balanced, y_balanced)
+
+    # Reshape for LSTM compatibility
+    X_seq = X_balanced.transpose(0, 2, 1)
+
+    # Split into train and test sets with stratification
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_seq, y_balanced, test_size=0.3, random_state=123, stratify=y_balanced
+    )
+
+    # Build the LSTM model
+    model = Sequential()
+    model.add(LSTM(128, input_shape=(X_train.shape[1], X_train.shape[2]), return_sequences=False))  # LSTM units = 128; return_sequences = False
+    model.add(Dense(1, activation='sigmoid'))  # Single output for binary classification
+    model.compile(optimizer=Adam(learning_rate=0.0005), loss='binary_crossentropy', metrics=['accuracy'])  # Learning rate = 0.0005
+
+    # Set up EarlyStopping
+    early_stopping = EarlyStopping(monitor='val_loss', patience=4, restore_best_weights=True)  # Patience = 4
+
+    # Train the model
+    model.fit(X_train, y_train, epochs=10, batch_size=64, validation_data=(X_test, y_test), callbacks=[early_stopping])  # Epochs = 10; Batch size = 64
+
+    # Evaluate the model
+    y_pred = (model.predict(X_test) > 0.5).astype(int)
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f'Accuracy: {accuracy:.4f}')
+
+    print(classification_report(y_test, y_pred))
+    auc = roc_auc_score(y_test, model.predict(X_test))
+    print(f'ROC-AUC: {auc:.4f}')
+
+
+
+
+
