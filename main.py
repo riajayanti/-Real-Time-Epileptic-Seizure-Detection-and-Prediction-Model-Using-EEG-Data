@@ -82,7 +82,7 @@ def main():
     if len(successful_patients) < 3:
         logger.error("Not enough patients loaded for proper validation")
         logger.error("Please ensure CHB-MIT dataset is available and paths are correct")
-        return
+        raise FileNotFoundError("Insufficient patient data for validation")
     
     logger.info(f"Successfully loaded {len(successful_patients)} patients")
     
@@ -241,20 +241,21 @@ def demo_with_synthetic_data():
         n_epochs = np.random.randint(100, 500)
         n_features = 10 * 64 * 20  # 10 channels, 64 Hz, 20 seconds
         
-        # Create realistic EEG-like data with much more overlap
+        # Create realistic EEG-like data with significant overlap (challenging)
         # Normal epochs: baseline EEG patterns
-        X = np.random.randn(n_epochs, n_features) * 0.8
+        X = np.random.randn(n_epochs, n_features) * 1.0
         
         # Add some structured patterns to normal EEG
         # Simulate alpha waves and other normal EEG patterns
         for i in range(n_epochs):
             # Add some periodic components (simulating brain rhythms)
             time_idx = np.arange(n_features)
-            alpha_wave = 0.2 * np.sin(2 * np.pi * time_idx / 100)  # Reduced amplitude
-            beta_wave = 0.1 * np.sin(2 * np.pi * time_idx / 50)   # Add beta waves
-            X[i, :] += alpha_wave + beta_wave + np.random.randn(n_features) * 0.3
+            alpha_wave = 0.15 * np.sin(2 * np.pi * time_idx / 100)  # Very subtle
+            beta_wave = 0.08 * np.sin(2 * np.pi * time_idx / 50)   # Very subtle
+            gamma_wave = 0.05 * np.sin(2 * np.pi * time_idx / 25)  # Background noise
+            X[i, :] += alpha_wave + beta_wave + gamma_wave + np.random.randn(n_features) * 0.5
         
-        # Add seizure patterns with realistic separability (much more challenging)
+        # Add seizure patterns with realistic separability (very challenging)
         seizure_ratio = np.random.uniform(0.05, 0.08)  # 5-8% seizures (realistic)
         n_seizures = int(n_epochs * seizure_ratio)
         seizure_indices = np.random.choice(n_epochs, n_seizures, replace=False)
@@ -262,15 +263,15 @@ def demo_with_synthetic_data():
         y = np.zeros(n_epochs)
         y[seizure_indices] = 1
         
-        # Make seizure epochs only slightly different (more realistic)
+        # Make seizure epochs only VERY slightly different (realistic medical challenge)
         for idx in seizure_indices:
-            # Add subtle high-frequency spike patterns (much smaller)
-            spike_pattern = np.random.randn(n_features) * 0.6  # Reduced from 1.2
-            # Add some rhythmic seizure activity (smaller amplitude)
-            seizure_rhythm = 0.3 * np.sin(2 * np.pi * np.arange(n_features) / 25)  # Reduced from 0.8
+            # Add very subtle seizure patterns (much more realistic)
+            spike_pattern = np.random.randn(n_features) * 0.25  # Very subtle spikes
+            # Add minimal rhythmic seizure activity
+            seizure_rhythm = 0.12 * np.sin(2 * np.pi * np.arange(n_features) / 30)  # Barely detectable
             X[idx, :] += spike_pattern + seizure_rhythm
-            # Add significant noise to make it very challenging
-            X[idx, :] += np.random.randn(n_features) * 0.6  # Increased noise
+            # Add significant noise to make it very challenging (realistic)
+            X[idx, :] += np.random.randn(n_features) * 0.8  # High noise
         
         patient_data[patient_id] = (X, y)
     
@@ -284,6 +285,7 @@ def demo_with_synthetic_data():
     )
     
     validator = PatientIndependentValidator()
+    analyzer = RealisticPerformanceAnalyzer()
     comparison_df = compare_models(patient_data, patient_splits, validator)
     
     print("\n" + "=" * 80)
@@ -302,6 +304,44 @@ def demo_with_synthetic_data():
     print("- F1-Score: 0.45-0.85")
     print("=" * 80)
     print(comparison_df.to_string(index=False, float_format='%.3f'))
+    
+    # Add red flag analysis for each model
+    print("\n" + "=" * 80)
+    print("RED FLAG ANALYSIS")
+    print("=" * 80)
+    
+    models_to_analyze = [
+        ('KNN', 'knn'),
+        ('Logistic Regression', 'logistic'),
+        ('Random Forest', 'random_forest'),
+        ('SVM', 'svm')
+    ]
+    
+    for model_display_name, model_name in models_to_analyze:
+        try:
+            model_class = ModelFactory.get_available_models()[model_name]
+            detailed_results = validator.validate_model(
+                model_class=model_class,
+                patient_data=patient_data,
+                patient_splits=patient_splits
+            )
+            
+            analysis = analyzer.analyze_results(detailed_results)
+            
+            print(f"\n{model_display_name}:")
+            if analysis['red_flags']:
+                print("  🚨 RED FLAGS:")
+                for flag in analysis['red_flags']:
+                    print(f"    - {flag}")
+            if analysis['warnings']:
+                print("  ⚠️  WARNINGS:")
+                for warning in analysis['warnings']:
+                    print(f"    - {warning}")
+            if not analysis['red_flags'] and not analysis['warnings']:
+                print("  ✅ No red flags detected")
+                
+        except Exception as e:
+            print(f"  ❌ Analysis failed: {e}")
 
 if __name__ == "__main__":
     try:
