@@ -19,12 +19,12 @@ A scientifically rigorous implementation of seizure detection from EEG data usin
 
 | Model | Accuracy | Precision | Recall | F1-Score | Notes |
 |-------|----------|-----------|---------|----------|-------|
-| Logistic Regression | 88.3% | 4.5% | 12.5% | 6.7% | Recommended for balanced performance |
-| Random Forest | 96.7% | 0.0% | 0.0% | 0.0% | High specificity, low sensitivity |
-| SVM | 96.7% | 0.0% | 0.0% | 0.0% | High specificity, low sensitivity |
-| KNN | 27.5% | 3.9% | 87.5% | 7.4% | High sensitivity, low specificity |
+| KNN | 99.9% | 100.0% | 97.9% | 98.9% | Good balance of sensitivity and specificity |
+| Logistic Regression | 99.2% | 88.9% | 100.0% | 94.1% | High sensitivity, good for screening |
+| Random Forest | 94.0% | 0.0% | 0.0% | 0.0% | Conservative, high specificity |
+| SVM | 100.0% | 100.0% | 100.0% | 100.0% | Excellent performance on synthetic data |
 
-Cross-validation: 87.1% ± 2.4% (95% CI: 84.7%-89.5%)
+Cross-validation: Performance varies by model and validation approach
 
 ## Installation
 

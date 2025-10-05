@@ -241,19 +241,20 @@ def demo_with_synthetic_data():
         n_epochs = np.random.randint(100, 500)
         n_features = 10 * 64 * 20  # 10 channels, 64 Hz, 20 seconds
         
-        # Create realistic EEG-like data with balanced difficulty
+        # Create realistic EEG-like data with much more overlap
         # Normal epochs: baseline EEG patterns
-        X = np.random.randn(n_epochs, n_features) * 0.5
+        X = np.random.randn(n_epochs, n_features) * 0.8
         
         # Add some structured patterns to normal EEG
         # Simulate alpha waves and other normal EEG patterns
         for i in range(n_epochs):
             # Add some periodic components (simulating brain rhythms)
             time_idx = np.arange(n_features)
-            alpha_wave = 0.3 * np.sin(2 * np.pi * time_idx / 100)  # Alpha-like rhythm
-            X[i, :] += alpha_wave + np.random.randn(n_features) * 0.2
+            alpha_wave = 0.2 * np.sin(2 * np.pi * time_idx / 100)  # Reduced amplitude
+            beta_wave = 0.1 * np.sin(2 * np.pi * time_idx / 50)   # Add beta waves
+            X[i, :] += alpha_wave + beta_wave + np.random.randn(n_features) * 0.3
         
-        # Add seizure patterns with realistic separability
+        # Add seizure patterns with realistic separability (much more challenging)
         seizure_ratio = np.random.uniform(0.05, 0.08)  # 5-8% seizures (realistic)
         n_seizures = int(n_epochs * seizure_ratio)
         seizure_indices = np.random.choice(n_epochs, n_seizures, replace=False)
@@ -261,15 +262,15 @@ def demo_with_synthetic_data():
         y = np.zeros(n_epochs)
         y[seizure_indices] = 1
         
-        # Make seizure epochs different but not perfectly separable
+        # Make seizure epochs only slightly different (more realistic)
         for idx in seizure_indices:
-            # Add high-frequency spike patterns (characteristic of seizures)
-            spike_pattern = np.random.randn(n_features) * 1.2
-            # Add some rhythmic seizure activity
-            seizure_rhythm = 0.8 * np.sin(2 * np.pi * np.arange(n_features) / 20)
+            # Add subtle high-frequency spike patterns (much smaller)
+            spike_pattern = np.random.randn(n_features) * 0.6  # Reduced from 1.2
+            # Add some rhythmic seizure activity (smaller amplitude)
+            seizure_rhythm = 0.3 * np.sin(2 * np.pi * np.arange(n_features) / 25)  # Reduced from 0.8
             X[idx, :] += spike_pattern + seizure_rhythm
-            # But also add noise to make it challenging
-            X[idx, :] += np.random.randn(n_features) * 0.4
+            # Add significant noise to make it very challenging
+            X[idx, :] += np.random.randn(n_features) * 0.6  # Increased noise
         
         patient_data[patient_id] = (X, y)
     

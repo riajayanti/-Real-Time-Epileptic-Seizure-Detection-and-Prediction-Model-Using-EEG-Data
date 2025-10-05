@@ -70,8 +70,8 @@ class ImprovedKNNClassifier(SeizureDetectionModel):
     FIXES: Consistent validation, proper parameter tuning
     """
     
-    def __init__(self, n_neighbors: int = 5, weights: str = 'distance', 
-                 metric: str = 'minkowski', random_state: int = None):
+    def __init__(self, n_neighbors: int = 7, weights: str = 'uniform', 
+                 metric: str = 'euclidean', random_state: int = None):
         super().__init__(random_state)
         self.n_neighbors = n_neighbors
         self.weights = weights

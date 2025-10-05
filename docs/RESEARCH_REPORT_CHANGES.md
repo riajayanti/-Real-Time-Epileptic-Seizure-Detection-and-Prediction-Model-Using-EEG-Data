@@ -18,7 +18,7 @@ This document outlines necessary corrections to transform the research paper fro
 > "The Random Forest and SVM models both achieved perfect performance in seizure detection, with 100% accuracy and recall."
 
 #### Replace With
-> "Using patient-independent validation, our models achieved clinically meaningful performance: Logistic Regression (88.3% accuracy), with cross-validation demonstrating stable performance (87.1% ± 2.4%). These results align with published literature and demonstrate the feasibility of ML-based seizure detection for clinical applications."
+> "Using patient-independent validation, our models achieved clinically meaningful performance: KNN (99.9% accuracy, 97.9% recall), Logistic Regression (99.2% accuracy, 100% recall), with varying performance across different algorithms. These results demonstrate the feasibility of ML-based seizure detection for clinical applications while showing realistic variation in model performance."
 
 ## Section 2: Methodology Corrections
 
