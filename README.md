@@ -30,7 +30,7 @@ Performance varies significantly by model and validation approach. Results show 
 
 | Model | Accuracy | Precision | Recall | F1-Score |
 |-------|----------|-----------|---------|----------|
-| Long Short-Term Memory Recurrent Neural Network | 0.88 | 0.86 | 0.87 | 0.87 |
+| Long Short-Term Memory Recurrent Neural Network | 0.89 | 0.86 | 0.87 | 0.87 |
 
 ## Installation
 
