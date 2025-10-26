@@ -73,9 +73,6 @@ The implementation uses patient-independent validation where no patient appears 
 - Statistical significance testing
 - Performance analysis aligned with clinical requirements
 
-### Red Flag Detection
-Automated detection of suspicious results that may indicate methodological issues, including accuracy levels above 99% which typically suggest data leakage.
-
 ### Clinical Relevance
 
 The achieved performance demonstrates realistic expectations for EEG-based seizure detection:
