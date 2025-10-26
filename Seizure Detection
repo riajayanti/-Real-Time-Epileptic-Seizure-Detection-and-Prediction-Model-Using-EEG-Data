@@ -1,0 +1,969 @@
+#SETUP
+
+import glob
+import numpy as np
+import pandas as pd
+import mne
+import os
+import matplotlib.pyplot as plt
+import pickle
+import pickletools
+import gc
+import shutil
+
+
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+
+import pyriemann
+from pyriemann import classification as classify
+
+from keras.layers import LSTM, Dense, RNN
+from keras.callbacks import ReduceLROnPlateau
+
+# This functions takes in file name (e.g. chb01_02.edf) and returns folder name (e.g. chb01)
+def get_folder_name(file_name):
+    folder_name, num = file_name.split("_")
+    return folder_name
+
+
+# This function takes in folder name and returns the summary file in that folder
+def get_summary_file(data_folder):
+    for file in os.listdir(data_folder):
+        #checking to see if it has summary
+        if len(str(file).split("-")) > 1:
+            return file
+
+summary_file = data_folder + get_summary_file(data_folder)
+print ("Summary File: ", summary_file)
+
+# This function reads the summary file and returns all the file names (unsorted), file start time and file end time
+# File_Order has File Name and File Start Time. File_End has File End Time. Count of files has number of files in data folder
+def get_file_start(summary):
+    file_order = {}
+    file_end = []
+    count_of_files = 0
+    summary = open(summary, "r")
+    lines = summary.readlines()
+    for index in range(len(lines)):
+        words = (lines[index]).split(" ")
+        if "File Name" in lines[index]:
+            name = words[2].strip()
+        if "File Start" in lines[index]:
+            time = words[3].strip()
+            file_order.update({time:name})
+            #convert time and name back to nothing
+            time = ""
+            name = ""
+            count_of_files += 1
+        if "File End" in lines[index]:
+            end = words[3].strip()
+            file_end.append(end)
+
+    return file_order, file_end, count_of_files
+
+file_order, file_end, count_of_files = get_file_start(summary_file)
+print("All Files (Unsorted)", file_order)
+print("Number of files in folder", count_of_files)
+
+# This function reads time in HH:MINS:SEC format and converts it into Seconds
+def get_hr(time):
+    hr, minute, sec = time.split(":")
+    hr_int = float(hr) * 3600
+    min_float = float(minute) * 60
+    sec_float = float(sec)
+    final = hr_int + min_float + sec_float
+    return final
+
+# This function is used to sort the time. Is this function used?
+#def sort_hr(hours):
+#    return hours.sort()
+
+def sort_by_time(summary):
+    file_order, file_end, count_of_files = get_file_start(summary) # already called before. Needed?
+    new_file_order = {}
+    hours = []
+
+    # This for loop gets all the file start time, converts into seconds, add to hours list
+    for time, file in file_order.items():
+        hour = get_hr(time)
+        hours.append(hour)
+        new_file_order.update({hour:file})
+
+    # Creates a new list called hours2 that sorts the original hours list
+    hours2 = sorted(hours)
+
+    # Look at the sorted hours2 list, finds the corresponding file details and adds to sorted_list dictionary for All Files
+    sorted_list = {}
+    for hour in hours2:
+        for time, file in new_file_order.items():
+            if hour == time:
+                sorted_list.update({hour: file})
+
+    # This for loop gets all the file end time, converts into seconds, add to end_times list
+    end_times = []
+    for val in file_end:
+        time = get_hr(val)
+        end_times.append(time)
+    #print(end_times)
+    end_times = sorted(end_times)
+
+    return sorted_list, end_times
+
+# new_file_order has all the files that are sorted by increasing file start time
+new_file_order, file_end = sort_by_time(summary_file)
+print ("All Files (Sorted): ", new_file_order)
+#print (file_end)
+
+# This function gets list of values from dictionary (Key: Value) pair
+# Example new_file_order has start time (key) and file name (value), so this function will extract all the values (file names)
+def get_value(dictionary):
+    values = []
+    for key, value in dictionary.items():
+        values.append(value)
+    return values
+
+# This function gets list of key from dictionary (Key: Value) pair
+# Example new_file_order has start time (key) and file name (value), so this function will extract all the keys (start time)
+def get_key(dictionary, val):
+    for key, value in dictionary.items():
+        if value == val:
+            return key
+
+# New_File_Order has Time and FileName in Order. Next line will get just the FileName
+ordered_files = get_value(new_file_order)
+print ("All File Names Only (Sorted)", ordered_files)
+
+# This function will get file name along with folder path
+def format_file_names(ordered_files):
+    file_names = []
+    for val in ordered_files:
+        folder_name = get_folder_name(val)
+
+        file_names.append("/content/drive/Shareddrives/riajayanti/physionet.org/files/chbmit/1.0.0/" + folder_name + "/" + val)
+        #file_names.append(  folder_name + "/" + val)
+    return file_names
+
+file_names = format_file_names(ordered_files)
+print("All Files Names with Full Path (Sorted)", file_names)
+
+def remove_excess_zeros(labels, epochs):
+    seizure_indices = np.where(labels == 1)[0]  # Indices of 1s (seizures)
+    retained_indices = set(seizure_indices)  # Start with all seizure indices
+
+    # Keep at least double the number of 0s before each 1
+    for idx in seizure_indices:
+        start_idx = max(0, idx - 2)  # Minimum of double the 0s before each 1
+        while start_idx > 0 and labels[start_idx - 1] == 0:
+            start_idx -= 1
+        retained_indices.update(range(start_idx, idx + 1))  # Add indices to the set
+
+# Function to preprocess raw EEG data into epochs
+def preprocess_raw_data(file_path, annotations, epoch_length=1):
+    # Load raw EEG data
+    raw = mne.io.read_raw_edf(file_path, preload=True)
+    sampling_rate = int(raw.info['sfreq'])  # Sampling rate (e.g., 256 Hz for MIT-CHB)
+    samples_per_epoch = epoch_length * sampling_rate
+
+    # Get EEG data as a numpy array
+    data, times = raw[:]
+    num_channels, num_samples = data.shape
+
+    # Create epochs
+    epochs = []
+    for start in range(0, num_samples, samples_per_epoch):
+        end = start + samples_per_epoch
+        if end > num_samples:  # Ensure the last epoch is full
+            break
+        epoch_data = data[:, start:end]  # Extract data for the epoch
+        epochs.append(epoch_data)
+
+    # Convert to numpy array
+    epochs = np.array(epochs)
+
+    # Create labels from annotations
+    labels = create_labels_from_annotations(epochs, annotations, sampling_rate, epoch_length)
+
+    # Remove excess zeros
+    labels, epochs = remove_excess_zeros(labels, epochs)
+
+    return epochs, labels
+
+# This function reads time in HH:MINS:SEC format and converts it into Seconds
+def get_hr(time):
+    hr, minute, sec = time.split(":")
+    hr_int = float(hr) * 3600
+    min_float = float(minute) * 60
+    sec_float = float(sec)
+    final = hr_int + min_float + sec_float
+    return final
+
+# This function is used to sort the time. Is this function used?
+#def sort_hr(hours):
+#    return hours.sort()
+
+def sort_by_time(summary):
+    file_order, file_end, count_of_files = get_file_start(summary) # already called before. Needed?
+    new_file_order = {}
+    hours = []
+
+    # This for loop gets all the file start time, converts into seconds, add to hours list
+    for time, file in file_order.items():
+        hour = get_hr(time)
+        hours.append(hour)
+        new_file_order.update({hour:file})
+
+    # Creates a new list called hours2 that sorts the original hours list
+    hours2 = sorted(hours)
+
+    # Look at the sorted hours2 list, finds the corresponding file details and adds to sorted_list dictionary for All Files
+    sorted_list = {}
+    for hour in hours2:
+        for time, file in new_file_order.items():
+            if hour == time:
+                sorted_list.update({hour: file})
+
+    # This for loop gets all the file end time, converts into seconds, add to end_times list
+    end_times = []
+    for val in file_end:
+        time = get_hr(val)
+        end_times.append(time)
+    #print(end_times)
+    end_times = sorted(end_times)
+
+    return sorted_list, end_times
+
+# new_file_order has all the files that are sorted by increasing file start time
+new_file_order, file_end = sort_by_time(summary_file)
+print ("All Files (Sorted): ", new_file_order)
+#print (file_end)
+
+# This function gets list of values from dictionary (Key: Value) pair
+# Example new_file_order has start time (key) and file name (value), so this function will extract all the values (file names)
+def get_value(dictionary):
+    values = []
+    for key, value in dictionary.items():
+        values.append(value)
+    return values
+
+# This function gets list of key from dictionary (Key: Value) pair
+# Example new_file_order has start time (key) and file name (value), so this function will extract all the keys (start time)
+def get_key(dictionary, val):
+    for key, value in dictionary.items():
+        if value == val:
+            return key
+
+# New_File_Order has Time and FileName in Order. Next line will get just the FileName
+ordered_files = get_value(new_file_order)
+print ("All File Names Only (Sorted)", ordered_files)
+
+# This function will get file name along with folder path
+def format_file_names(ordered_files):
+    file_names = []
+    for val in ordered_files:
+        folder_name = get_folder_name(val)
+
+        file_names.append("/content/drive/Shareddrives/riajayanti/physionet.org/files/chbmit/1.0.0/" + folder_name + "/" + val)
+        #file_names.append(  folder_name + "/" + val)
+    return file_names
+
+file_names = format_file_names(ordered_files)
+print("All Files Names with Full Path (Sorted)", file_names)
+
+def get_seizure_start_end_times(summary_file, seizure_files):
+
+  #seizure_start_end_times = []
+  start = []
+  end = []
+
+  with open(summary_file, 'r') as f:
+    lines = f.readlines()
+
+  # Iterate through each seizure file
+  for seizure_file in seizure_files:
+
+      labels = remove_excessive_leading_zeros(labels)
+      start_time = None
+      end_time = None
+      line_counter = 0
+
+      # Look for seizure file in summary
+      for line in lines:
+        line_counter += 1
+        if 'File Name' in line and seizure_file in line:
+          print(f"Seizure File found: {seizure_file}")
+
+          # Look for "Seizure Start" and "Seizure End" within the lines after the 'File Name' line
+          for i in range(line_counter + 1, len(lines)):
+            if "Seizure" in lines[i] and "Start" in lines[i] :
+              start_time = lines[i].split()[-2].strip()
+              start.append(start_time)
+              #print ("Start Time: ", start_time, lines[i])
+
+            if "Seizure" in lines[i] and "End" in lines[i] :
+              end_time = lines[i].split()[-2].strip()
+              end.append(end_time)
+
+            if 'File Name' in lines[i]:
+              break  # Found both start and end, move to next seizure file
+
+          #if start_time and end_time:
+            #seizure_start_end_times.append((start_time, end_time))
+          break  # Move to next seizure file
+
+          start, end = get_seizure_start_end_times(summary_file, seizure_files)
+          print("Seizure Start and End Times (Sorted):", start, end)
+
+  return start, end
+
+# This function inputs a number and converts it to a float. Example: later start time is converted to float
+def convert_string_to_float(array):
+    float_array = []
+    for val in array:
+        float_array.append(float(val))
+    return float_array
+
+# This function converts a list into a NumPy array
+def array_to_numpy(array):
+    return np.asarray(array)
+
+# 2) PROCESS EEG DATA 
+
+# Save "data" in "filename.pkl" file which is "intermediate_data" folder. This can be any pickle file - epoch, label, chunks, etc.
+def save_intermediate_data(data, filename):
+    """Save intermediate processing results"""
+    os.makedirs('intermediate_data', exist_ok=True)
+    with open(f'intermediate_data/{filename}.pkl', 'wb') as f:
+        pickle.dump(data, f)
+
+# Load pickle file into memory for usage
+def load_intermediate_data(filename):
+    """Load intermediate processing results"""
+    with open(f'intermediate_data/{filename}.pkl', 'rb') as f:
+        return pickle.load(f)
+
+# Processes individual files inside main folder. Example chb06 has 18 such files
+def process_single_file(filename, file_index, save_intermediate=True):
+    """Process a single EEG file with intermediate saving"""
+    try:
+        print(f"\nProcessing file {file_index}: {filename}")
+
+        # Load and preprocess
+        data = mne.io.read_raw_edf(filename, preload=True)
+        data.resample(64)  # Downsample to 64 Hz
+
+        # Select channels
+        channels_to_keep = ['FP1-F7', 'F7-T7', 'T7-P7', 'P7-O1', 'FP1-F3',
+                          'F3-C3', 'C3-P3', 'P3-O1', 'FP2-F4', 'F4-C4']
+        data.pick_channels(channels_to_keep)
+
+        mne.channels.make_1020_channel_selections(data.info)
+        data.set_eeg_reference()
+
+        # Create epochs
+        epochs = mne.make_fixed_length_epochs(data,
+                                            duration=20,
+                                            overlap=4,
+                                            preload=True)
+        epochs.drop_bad()
+
+        if save_intermediate:
+            save_intermediate_data(epochs, f'epochs_{file_index}')
+
+        # Clean up
+        del data
+        del epochs # Added this from prior version
+        gc.collect()
+
+        return epochs
+
+    except Exception as e:
+        print(f"Error processing file {filename}: {str(e)}")
+        return None
+def combine_processed_files(num_files, chunk_size=2):
+    """Combine processed files with chunking to manage memory"""
+    try:
+        num_chunks = (num_files + chunk_size - 1) // chunk_size
+
+        for chunk in range(num_chunks):
+            print(f"\nProcessing chunk {chunk + 1}/{num_chunks}")
+            start_idx = chunk * chunk_size
+            end_idx = min(start_idx + chunk_size, num_files)
+
+            # Load first file in chunk
+            combined = load_intermediate_data(f'epochs_{start_idx}')
+
+            # Combine with second chunk file if available
+            for i in range(start_idx + 1, end_idx):
+                next_epochs = load_intermediate_data(f'epochs_{i}')
+                combined = mne.concatenate_epochs([combined, next_epochs])
+                del next_epochs
+                gc.collect()
+
+            # Save chunk result
+            save_intermediate_data(combined, f'chunk_{chunk}')
+            del combined
+            gc.collect()
+
+        # Final combination
+        print("\nPerforming final combination...")
+        result = load_intermediate_data('chunk_0')
+
+        for chunk in range(1, num_chunks):
+            next_chunk = load_intermediate_data(f'chunk_{chunk}')
+            result = mne.concatenate_epochs([result, next_chunk])
+            del next_chunk
+            gc.collect()
+
+        save_intermediate_data(result, 'final_epochs_15')
+        return result
+
+    except Exception as e:
+        print(f"Error combining files: {str(e)}")
+        return None
+
+def main_pipeline(file_names):
+    """Main processing pipeline with intermediate saving"""
+    # Create directory for intermediate results
+    os.makedirs('intermediate_data', exist_ok=True)
+
+    try:
+        # Process each file
+        for idx, filename in enumerate(file_names):
+            process_single_file(filename, idx)
+
+        # Combine processed files
+        final_epochs_15 = combine_processed_files(len(file_names))
+
+        if final_epochs_15 is not None:
+            # Prepare for classification
+            # x_data = prepare_for_classification(final_epochs)
+            # save_intermediate_data(x_data, 'processed_features')
+
+            print("Processing complete! Results saved in intermediate_data/")
+
+            # COMMENTED ABOVE 3 LINES. Don't want to convert to 2D NUMPY array yet as set montage, drop channel etc works on array
+            # return x_data
+            return final_epochs_15
+        else:
+            print("Failed to process files")
+            return None
+
+    except Exception as e:
+        print(f"Error in main pipeline: {str(e)}")
+        return None
+    finally:
+        # Optional: Clean up temporary files
+        # shutil.rmtree('intermediate_data')
+        pass
+import os
+file_path = '/content/drive/Shareddrives/riajayanti/physionet.org/files/chbmit/1.0.0/chb01/chb01_01.edf'
+if os.path.exists(file_path):
+    print("File exists.")
+else:
+    print("File does not exist.")
+# Run processing pipeline - This creates the final_epochs file
+# print (file_names)
+processed_data = main_pipeline(file_names)
+all_epochs = processed_data
+print(all_epochs.info)
+# print(all_epochs.shape)
+
+montage =  mne.channels.make_standard_montage('standard_1020')
+all_epochs.info["ch_names"]
+
+new_channels = ['FP1', 'F7', 'T7', 'P7', 'F3', 'C3', 'P3', 'O1', 'FP2', 'F4']
+channels = ['FP1-F7', 'F7-T7', 'T7-P7', 'P7-O1', 'FP1-F3', 'F3-C3', 'C3-P3', 'P3-O1', 'FP2-F4', 'F4-C4']
+
+mapping = {}
+for i in range(len(channels)):
+    mapping.update({channels[i]: new_channels[i]})
+
+mne.rename_channels(all_epochs.info, mapping)
+all_epochs.info["ch_names"]
+
+all_epochs.drop_channels(['FP1', 'FP2'])
+
+all_epochs.set_montage(montage) #THIS CODE GIVES AN ERROR WHEN FP1 AND FP2 CHANNELS ARE PRESENT
+
+all_epochs= all_epochs.load_data()
+
+def make_topography_images(epochs, pos):
+    mne.viz.plot_topomap(epochs, pos)
+
+# 3) SIGNAL DECOMPOSITION AND NOISE REDUCTION
+
+def ica_on_epochs(epochs):
+    ica = mne.preprocessing.ICA(n_components = 8, random_state = 97, max_iter = 800) # changed to 8 as we only have 8 channels
+    ica.fit(epochs)
+    epochs = ica.apply(epochs)
+    ica.plot_properties(epochs)
+    return epochs
+
+epochs = ica_on_epochs(all_epochs)
+
+noise_covariance = mne.compute_covariance(epochs)
+noise_covariance.plot(epochs.info)
+
+# The code below returns a list of Projection Vectors
+projections = mne.compute_proj_epochs(epochs)
+
+# Adding Projections to Epochs Object
+epochs.add_proj(projections)
+
+# Plotting the Projections
+noise_covariance.plot(epochs.info, proj = True)
+
+# Plot Epochs Image and show ERP
+epochs.plot_image()
+
+# Plot the sensor locations
+epochs.plot_sensors()
+
+# 4) LABEL EPOCH ( 1 - Seizure, 0 - No Seizure)
+
+def get_seizure_time(summary, seizure_files):
+     start = []
+     end = []
+     summary = open(summary, "r")
+     for line in summary:
+         words = line.split(" ")
+         if "Seizure" in line and "Start" in line:
+            start.append(words[len(words) - 2])
+         elif "Seizure" in line and "End" in line:
+             end.append(words[len(words) - 2])
+     return start, end
+start, end = get_seizure_time(summary_file, seizure_files)
+
+#Start and End Values are strings, so convert to float
+
+start = convert_string_to_float(start)
+end = convert_string_to_float(end)
+print ("Seizure Start/End Time Sorted", start, end)
+
+def get_label(time_count, seizure_starts, seizure_ends):
+    label = 0
+    count = 0
+    #print (len(seizure_starts))
+    for index in range(len(seizure_starts)):
+        if (time_count >= int(seizure_starts[index]) and time_count <= int(seizure_ends[index])):
+            label = 1
+            print (time_count, seizure_starts[index], seizure_ends[index])
+            #count = count + 1
+    #print (count)
+    return label
+
+def get_epoch_labels(epochs, seizure_start_time, seizure_end_time):
+    #seizure time occurs in the total file time
+    labels = []
+    time_count = 0
+    for epoch in epochs:
+        labels.append(get_label(time_count, seizure_start_time, seizure_end_time))
+        #time_count += 5
+        time_count += 20
+    return labels
+
+epochs_array = load_intermediate_data("final_epochs_15")
+
+epochs_labels = get_epoch_labels(epochs_array, start, end)
+epochs_labels = array_to_numpy(epochs_labels)
+epochs_labels.shape
+
+save_intermediate_data(epochs_labels, 'final_labels_15')
+
+def check_for_seizure(labels):
+    for label in labels:
+        if label == 1:
+            return True
+    return False
+
+# Statistics to evaluate how many times we should replicate
+print("Length of Original Epoch", len(epochs_array))
+
+labels = load_intermediate_data("final_labels_15")
+
+#COUNTER
+
+from collections import Counter
+Counter(labels)
+
+def replicate_seizure_epochs(epochs_array, labels):
+
+    # Find the indices where the label is 1
+    indices_label_1 = np.where(labels == 1)[0]
+    #print (indices_label_1)
+
+    # Replicate the epochs with label 1
+    replicated_epochs = epochs_array[indices_label_1]
+    # Reshape replicated_epochs to match the dimensions of epochs_array
+    replicated_epochs = replicated_epochs[:, np.newaxis, :] # Add a new axis to make it 3D
+
+    # Create a new array with the original epochs and the replicated epochs
+    new_epochs_array = np.concatenate((epochs_array, replicated_epochs), axis=0) # Specify axis for concatenation
+
+    # Create a new label array with the original labels and the replicated labels
+    new_labels = np.concatenate((labels, np.ones_like(labels[indices_label_1])))
+
+    # Print the number of labels with value 1 in the new label array
+    print(Counter(new_labels))
+    print(len(new_epochs_array))
+
+    return new_epochs_array, new_labels
+
+save_intermediate_data(epochs_array, 'Replicated_epoch_15')
+save_intermediate_data(labels, 'Replicated_label_15')
+
+epochs_array = load_intermediate_data("Replicated_epoch_15")
+labels = load_intermediate_data("Replicated_label_15")
+
+# 5) SYNTHETIC MINORITY OVERSAMPLING TECHNIQUE 
+
+from imblearn.over_sampling import SMOTE
+from collections import Counter
+
+def balance_seizure_data(epochs_array, labels):
+    """
+    Balance seizure/non-seizure data using SMOTE
+
+    Args:
+        epochs_array: 3D array of shape (n_epochs, n_channels, n_timepoints)
+        labels: Binary labels array
+    """
+    # Reshape 3D data to 2D for SMOTE
+    # Get the underlying NumPy array from epochs_array
+    epochs_data = epochs_array.get_data()
+
+    # Access the shape from the underlying data
+    n_epochs, n_channels, n_timepoints = epochs_data.shape
+    X_reshaped = epochs_data.reshape(n_epochs, n_channels * n_timepoints)
+
+    # Apply SMOTE
+    smote = SMOTE(sampling_strategy=0.5)  # Adjust ratio as needed
+    X_balanced, y_balanced = smote.fit_resample(X_reshaped, labels)
+
+    # Reshape back to 3D
+    X_balanced_3d = X_balanced.reshape(-1, n_channels, n_timepoints)
+
+    print("Original class distribution:", Counter(labels))
+    print("Balanced class distribution:", Counter(y_balanced))
+
+    return X_balanced_3d, y_balanced # Return the NumPy array
+
+from imblearn.combine import SMOTETomek
+from collections import Counter
+
+def hybrid_balance_seizure_data(epochs_array, labels):
+    """
+    Balance seizure/non-seizure data using combined over/undersampling
+
+    Args:
+        epochs_array: 3D array of shape (n_epochs, n_channels, n_timepoints)
+        labels: Binary labels array
+    """
+    # Reshape 3D data to 2D
+    n_epochs, n_channels, n_timepoints = epochs_array.shape
+    X_reshaped = epochs_array.reshape(n_epochs, n_channels * n_timepoints)
+
+    # Apply SMOTETomek
+    smt = SMOTETomek(sampling_strategy='auto')
+    X_balanced, y_balanced = smt.fit_resample(X_reshaped, labels)
+
+    # Reshape back to 3D
+    X_balanced_3d = X_balanced.reshape(-1, n_channels, n_timepoints)
+
+    print("Original class distribution:", Counter(labels))
+    print("Balanced class distribution:", Counter(y_balanced))
+
+    return X_balanced_3d, y_balanced
+
+def validate_balanced_data(X_balanced, y_balanced):
+    """Validate balanced dataset"""
+    # Check for NaN/infinite values
+    if np.any(np.isnan(X_balanced)) or np.any(np.isinf(X_balanced)):
+        raise ValueError("Dataset contains NaN or infinite values")
+
+    # Verify class balance
+    class_counts = Counter(y_balanced)
+    ratio = min(class_counts.values()) / max(class_counts.values())
+    if ratio < 0.4:  # Can adjust threshold
+        print("Warning: Classes still significantly imbalanced")
+
+epochs_array, labels = balance_seizure_data(epochs_array, labels)
+
+# 6) USING SPARSE CODING 
+
+!pip install mne
+
+import mne
+import numpy as np
+from collections import Counter
+
+def spoc(epochs_array, epochs_labels, num_comp):
+    """
+    Applies SPoC spatial filtering to epochs data.
+
+    Args:
+        epochs_array (mne.EpochsArray): Epochs data.
+        epochs_labels (array-like): Epoch labels.
+        num_comp (int): Number of spatial components to extract.
+
+    Returns:
+        numpy.ndarray: SPoC-filtered epochs data.
+    """
+    # Get the underlying data as a NumPy array
+    epochs_data = epochs_array.get_data()
+
+    # Convert the data to float64
+    epochs_data = epochs_data.astype(np.float64)
+
+    spoc = mne.decoding.SPoC(num_comp, reg='ledoit_wolf')
+
+    try:
+        spoc_epochs = spoc.fit_transform(epochs_data, epochs_labels)
+    except np.linalg.LinAlgError as e:
+        print(f"LinAlgError encountered: {e}")
+        print("Possible causes:")
+        print("- Insufficient data for reliable covariance estimation")
+        print("- High correlation or collinearity between channels")
+        print("- Incorrect epoch dimensions or data type")
+        print("Consider increasing the number of epochs or reducing channels,")
+        print("or try a different regularization method like 'oas'.")
+        return None
+    return spoc_epochs
+
+def make_graph(epochs):
+    #getting the three channels
+
+    epochs.plot(scalings = "auto")
+
+make_graph(epochs)
+
+epochs.plot_psd(fmin=0.2, fmax = 32., average=True) # changed fmax from 40 to 32 as frequency is 32 Hz now
+
+epochs.plot_psd_topomap()
+
+def make_2d(array):
+    try:
+        data = array.get_data()
+    except AttributeError:
+        data = array  # If not an EpochsArray, assume it's already a NumPy array
+
+    dim1, dim2, dim3 = data.shape # Access the shape of the data
+    array = np.reshape(data, (dim1, dim2 * dim3))
+
+    #array = np.reshape(array, (dim1, dim2 * dim3))
+    return array
+
+Epochs_2D_Array = make_2d(epochs_array)
+
+# Counter
+Counter(labels)
+
+# 7) SEIZURE DETECTION MODELS 
+
+"""
+Confusion Matrix Key: 
+    True Negative (Top-Left Quadrant)
+    False Positive (Top-Right Quadrant)
+    False Negative (Bottom-Left Quadrant)
+    True Positive (Bottom-Right Quadrant)
+"""
+
+# a) K-NEAREST NEIGHBORS (KNN)
+
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import recall_score
+
+from sklearn import metrics # or from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+
+def sklearn_knn(x_data, y_data, num_neighbors):
+    # Split the data into train and test sets with random sampling
+    x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.8, random_state=22)
+    model = KNeighborsClassifier(n_neighbors=num_neighbors, weights='distance')
+    model.fit(x_train, y_train)
+    # Use cross-validation for additional validation on training data
+    cross_val_scores = cross_val_score(model, x_train, y_train, cv=5)
+    print("Cross-Validation Accuracy: ", np.mean(cross_val_scores))
+
+    y_preds = model.predict(x_test)
+    accuracy = accuracy_score(y_test, y_preds)
+    recall = recall_score(y_test, y_preds)  # Calculate recall
+
+    confusion_matrix = metrics.confusion_matrix(y_test, y_preds)
+
+    cm_display = metrics.ConfusionMatrixDisplay(confusion_matrix = confusion_matrix, display_labels = [0, 1])
+
+    cm_display.plot()
+    plt.show()
+    return accuracy, recall
+
+
+score, recall = sklearn_knn(Epochs_2D_Array, labels, 2)
+print("Test Accuracy: ", score)
+print("Test Recall: ", recall)
+
+# b) LOGISTIC REGRESSION
+
+from sklearn.linear_model import LogisticRegression
+
+def logistic_regression(x_data, y_data):
+    x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.2, random_state=42)
+    model = LogisticRegression(class_weight='balanced', max_iter=1000)
+    model.fit(x_train, y_train)
+    print("Cross-Validation Accuracy: ", np.mean(cross_val_score(model, x_train, y_train, cv=5)))
+
+    y_preds = model.predict(x_test)
+    accuracy = accuracy_score(y_test, y_preds)
+    recall = recall_score(y_test, y_preds)
+    return accuracy, recall
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, recall_score
+
+def logistic_regression(x_data, y_data):
+    # Check if y_data has at least 2 unique classes
+    unique_classes = np.unique(y_data)
+    if len(unique_classes) < 2:
+        raise ValueError("Target variable 'y_data' must have at least 2 unique classes for Logistic Regression.")
+
+    # Split data into training and test sets
+    x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.2, random_state=42, stratify=y_data)
+
+    # Initialize and train the model
+    model = LogisticRegression(class_weight='balanced', max_iter=1000)
+    model.fit(x_train, y_train)
+
+    # Cross-validation scores
+    cross_val_scores = cross_val_score(model, x_train, y_train, cv=5)
+    print("Cross-Validation Accuracy: ", np.mean(cross_val_scores))
+
+    # Make predictions and calculate accuracy and recall
+    y_preds = model.predict(x_test)
+    accuracy = accuracy_score(y_test, y_preds)
+    recall = recall_score(y_test, y_preds)
+
+    # Print results before returning
+    print("Test Accuracy: ", accuracy)
+    print("Test Recall: ", recall)
+
+    confusion_matrix = metrics.confusion_matrix(y_test, y_preds)
+
+    cm_display = metrics.ConfusionMatrixDisplay(confusion_matrix = confusion_matrix, display_labels = [0, 1])
+
+    cm_display.plot()
+    plt.show()
+
+    return accuracy, recall
+
+score, recall = logistic_regression(Epochs_2D_Array, labels)
+
+import matplotlib.pyplot as plt
+import numpy
+from sklearn import metrics
+
+# c) RANDOM FOREST CLASSIFIER (RFC)
+
+# Takes 6 minutes to run
+from sklearn.ensemble import RandomForestClassifier
+
+def random_forest(x_data, y_data, n_trees):
+    x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.2, random_state=42)
+    model = RandomForestClassifier(n_estimators=n_trees, class_weight='balanced', random_state=42)
+    model.fit(x_train, y_train)
+
+    cross_val_scores = cross_val_score(model, x_train, y_train, cv=5)
+    print("Cross-Validation Accuracy: ", np.mean(cross_val_scores))
+
+    y_preds = model.predict(x_test)
+    accuracy = accuracy_score(y_test, y_preds)
+    recall = recall_score(y_test, y_preds)
+
+    confusion_matrix = metrics.confusion_matrix(y_test, y_preds)
+
+    cm_display = metrics.ConfusionMatrixDisplay(confusion_matrix = confusion_matrix, display_labels = [0, 1])
+
+    cm_display.plot()
+    plt.show()
+
+    return accuracy, recall
+
+score, recall = random_forest(Epochs_2D_Array, labels, 100)
+print("Test Accuracy: ", score)
+print("Test Recall: ", recall)
+
+import matplotlib.pyplot as plt
+import numpy
+from sklearn import metrics
+
+# d) SUPPORT VECTOR MACHINE (SVM)
+
+# Takes 17 minutes to run
+from sklearn.svm import SVC
+
+def svm_classifier(x_data, y_data, kernel):
+    x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.2, random_state=42)
+    model = SVC(kernel=kernel, class_weight='balanced', random_state=42)
+    model.fit(x_train, y_train)
+
+    cross_val_scores = cross_val_score(model, x_train, y_train, cv=5)
+    print("Cross-Validation Accuracy: ", np.mean(cross_val_scores))
+
+    y_preds = model.predict(x_test)
+    accuracy = accuracy_score(y_test, y_preds)
+    recall = recall_score(y_test, y_preds)
+
+
+    return accuracy, recall
+# Takes 17 minutes to run
+from sklearn.svm import SVC
+import numpy as np # Import numpy for unique function
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import accuracy_score, recall_score
+
+
+def svm_classifier(x_data, y_data, kernel):
+    # Check the unique values in y_data
+    unique_classes = np.unique(y_data)
+
+    # Raise an error if only one unique class is found
+    if len(unique_classes) < 2:
+        raise ValueError(f"The target variable 'y_data' must have at least 2 unique classes. Found {unique_classes}")
+
+    x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.2, random_state=42)
+    model = SVC(kernel=kernel, class_weight='balanced', random_state=42)
+    model.fit(x_train, y_train)
+
+    cross_val_scores = cross_val_score(model, x_train, y_train, cv=5)
+    print("Cross-Validation Accuracy: ", np.mean(cross_val_scores))
+
+    y_preds = model.predict(x_test)
+    accuracy = accuracy_score(y_test, y_preds)
+    recall = recall_score(y_test, y_preds)
+    test_accuracy = accuracy_score(y_test, y_preds)
+
+    confusion_matrix = metrics.confusion_matrix(y_test, y_preds)
+
+    cm_display = metrics.ConfusionMatrixDisplay(confusion_matrix = confusion_matrix, display_labels = [0, 1])
+
+    cm_display.plot()
+    plt.show()
+
+    print("Test Accuracy:", test_accuracy)
+    print("Test Recall:", recall)
+
+    return accuracy, recall
+
+
+svm_classifier(Epochs_2D_Array, labels, 'rbf')
+
+import matplotlib.pyplot as plt
+import numpy
+from sklearn import metrics
