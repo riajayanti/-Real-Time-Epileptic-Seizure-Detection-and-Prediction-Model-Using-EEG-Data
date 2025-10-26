@@ -4,18 +4,18 @@
 [![Validation](https://img.shields.io/badge/validation-patient--independent-green.svg)](docs/)
 [![Performance](https://img.shields.io/badge/accuracy-88.3%25-brightgreen.svg)](docs/FINAL_RESULTS_ANALYSIS.md)
 
-A scientifically rigorous implementation of seizure detection from EEG data using machine learning with patient-independent validation and realistic performance evaluation. Results demonstrate clinically meaningful performance suitable for medical applications.
+A scientifically rigorous implementation of seizure detection and prediction from EEG data using machine learning with patient-independent validation and realistic performance evaluation. Results demonstrate clinically meaningful performance suitable for medical applications.
 
 ## Key Features
 
 - Patient-independent validation to prevent data leakage
-- Realistic performance evaluation (88.3% accuracy)
+- Realistic performance evaluation (88.3% detection accuracy, 89.0% prediction accuracy)
 - Cross-validation with statistical confidence intervals  
 - Comprehensive error handling and testing
 - Modular, production-ready architecture
 - Clinical performance suitable for decision support
 
-## Performance Results
+## Seizure Detection Performance Results
 
 | Model | Accuracy | Precision | Recall | F1-Score | Notes |
 |-------|----------|-----------|---------|----------|-------|
@@ -25,6 +25,12 @@ A scientifically rigorous implementation of seizure detection from EEG data usin
 | KNN | 6.0% | 6.0% | 100.0% | 11.3% | High sensitivity but many false positives |
 
 Performance varies significantly by model and validation approach. Results show realistic medical ML performance ranges.
+
+## Seizure Prediction Performance Results
+
+| Model | Accuracy | Precision | Recall | F1-Score | Notes |
+|-------|----------|-----------|---------|----------|-------|
+| Long Short-Term Memory Recurrent Neural Network | 0.88 | 0.86 | 0.87 | 0.87 |
 
 ## Installation
 
@@ -126,10 +132,10 @@ MIT License - see LICENSE file for details
 If you use this implementation in your research, please cite:
 
 ```bibtex
-@software{seizure_detection_eeg,
-  title={Seizure Detection Using EEG Data: Patient-Independent Implementation},
-  author={Research Team},
-  year={2024},
+@software{seizure_detection_prediction_eeg,
+  title={Seizure Detection and Prediction Using EEG Data: Patient-Independent Implementation},
+  author={Ria Jayanti},
+  year={2025},
   url={https://github.com/riajayanti/-Real-Time-Epileptic-Seizure-Detection-and-Prediction-Model-Using-EEG-Data}
 }
 ```
