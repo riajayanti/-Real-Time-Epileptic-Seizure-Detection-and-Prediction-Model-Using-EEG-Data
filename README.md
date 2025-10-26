@@ -63,21 +63,6 @@ python tests/test_pipeline.py
 python main.py
 ```
 
-## Project Structure
-
-```
-├── src/                    # Core implementation
-│   ├── config.py          # Configuration management
-│   ├── data_processing.py # Patient-independent data handling
-│   ├── validation.py      # Validation framework
-│   └── models.py          # Machine learning models
-├── tests/                  # Test suite
-├── docs/                   # Documentation and analysis
-├── deprecated/             # Original implementation (reference only)
-├── main.py                # Demonstration pipeline
-└── README.md              # This file
-```
-
 ## Scientific Methodology
 
 ### Patient-Independent Validation
